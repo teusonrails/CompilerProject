@@ -17,6 +17,7 @@ enum Token {
     LBrace,
     RBrace,
     Comma,
+    Colon,
     IntType,
     FloatType,
     BoolType,
@@ -58,6 +59,7 @@ impl Lexer {
             '{' => Token::LBrace,
             '}' => Token::RBrace,
             ',' => Token::Comma,
+            ':' => Token::Colon,
             _ => {
                 if ch.is_digit(10) {
                     return self.read_number();
@@ -136,6 +138,9 @@ enum ASTNode {
     },
     Identifier(String),
     Number(i32),
+    FloatLiteral(f64),
+    BooleanLiteral(bool),
+    StringLiteral(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -354,7 +359,8 @@ impl Parser {
 }
 
 /* Virtual Machine */
-#[derive(Debug, Clone)]
+use std::fmt;
+#[derive(Debug, Clone, PartialEq)]
 enum Value{
     Int(i32),
     Float(f64),
@@ -364,6 +370,16 @@ enum Value{
 
 use std::collections::HashMap;
 
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Value::Int(v) => write!(f, "{}", v),
+            Value::Float(v) => write!(f, "{}", v),
+            Value::Bool(v) => write!(f, "{}", v),
+            Value::String(v) => write!(f, "{}", v),
+        }
+    }
+}
 
 struct MiniLangVM {
     variables: HashMap<String, Value>,
@@ -383,7 +399,7 @@ impl MiniLangVM {
                 println!("Teste falhou: Esperado {:?}, mas encontrou {:?}", expected_value, value);
             }
             None => {
-                println!("Teste falhou: Variavel '{}', não encontrada!");
+                println!("Teste falhou: Variavel, não encontrada!");
             }
         }
     }
@@ -422,17 +438,17 @@ impl MiniLangVM {
 
         self.variables = global_variables_backup;
 
-        result
+        Some(result)
     }
 
-    fn evaluate_expression(&mut self, expression: ASTNode) -> (i32, Type) {
+    fn evaluate_expression(&mut self, expression: ASTNode) -> Value {
         match expression {
             ASTNode::Number(value) => Value::Int(value),
             ASTNode::FloatLiteral(value) => Value::Float(value),
             ASTNode::BooleanLiteral(value) => Value::Bool(value),
             ASTNode::StringLiteral(value) => Value::String(value),
             ASTNode::Identifier(name) => {
-                *self.variables.get(&name).expect("Variável não encontrada!").clone()
+                self.variables.get(&name).expect("Variável não encontrada!").clone()
             }
             ASTNode::BinaryExpression {left, operator, right} => {
                 let left_value = self.evaluate_expression(*left);
@@ -449,8 +465,8 @@ impl MiniLangVM {
                     (Value::Float(l), Value::Float(r), Token::Multiply) => Value::Float(l * r),
                     (Value::Float(l), Value::Float(r), Token::Divide) => Value::Float(l / r),
 
-                    (Value::String(1), Value::String(1), Token::Plus) => {
-                        Value::String(1 + &r)
+                    (Value::String(l), Value::String(r), Token::Plus) => {
+                        Value::String(l + &r)
                     }
 
                     _ => panic!("Erro de tipo: Operação não suportada para esses tipos!"),
@@ -472,6 +488,7 @@ impl MiniLangVM {
             }
             _ => panic!("Expressão não suportada!"),
         }
+        Value::Int(result)
     }
     fn run(&mut self, ast: ASTNode) -> Option<i32> {
         match ast {

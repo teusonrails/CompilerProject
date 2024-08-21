@@ -17,6 +17,10 @@ enum Token {
     LBrace,
     RBrace,
     Comma,
+    IntType,
+    FloatType,
+    BoolType,
+    StringType,
     Eof,
 }
 
@@ -43,7 +47,7 @@ impl Lexer {
         let ch = self.input[self.position];
 
         let token = match ch {
-
+            '=' => Token::Assign,
             '+' => Token::Plus,
             '-' => Token::Minus,
             '*' => Token::Multiply,
@@ -92,6 +96,10 @@ impl Lexer {
         let ident: String = self.input[start..self.position].iter().collect();
 
         match ident.as_str() {
+            "int" => Token::IntType,
+            "float" => Token::FloatType,
+            "bool" => Token::BoolType,
+            "string" => Token::StringType,
             "let" => Token::Let,
             "function" => Token::Function,
             "return" => Token::Return,
@@ -106,6 +114,7 @@ enum ASTNode {
     Program(Vec<Box<ASTNode>>),
     LetDeclaration {
         identifier: String,
+        var_type: Type,
         expression: Box<ASTNode>,
     },
     BinaryExpression {
@@ -127,6 +136,14 @@ enum ASTNode {
     },
     Identifier(String),
     Number(i32),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Type {
+    Int,
+    Float, 
+    Bool,
+    String,
 }
 
 struct Parser {
@@ -168,6 +185,17 @@ impl Parser {
         };
         self.eat(Token::Ident(identifier.clone()));
 
+        self.eat(Token::Colon);
+
+        let var_type = match self.current_token(){
+            Token::IntType => Type::Int,
+            Token::FloatType => Type::Float,
+            Token::BoolType => Type::Bool,
+            Token::StringType => Type::String,
+            _ => panic!("Esperado tipo após ':'"),
+        };
+        self.eat(self.current_token().clone());
+
         self.eat(Token::Assign);
 
         let expression = self.parse_expression();
@@ -176,6 +204,7 @@ impl Parser {
 
         ASTNode::LetDeclaration {
             identifier,
+            var_type,
             expression: Box::new(expression),
         }
     }
@@ -325,11 +354,19 @@ impl Parser {
 }
 
 /* Virtual Machine */
+#[derive(Debug, Clone)]
+enum Value{
+    Int(i32),
+    Float(f64),
+    Bool(bool),
+    String(String),
+}
 
 use std::collections::HashMap;
 
+
 struct MiniLangVM {
-    variables: HashMap<String, i32>,
+    variables: HashMap<String, Value>,
     variable_order: Vec<String>,
     functions: HashMap<String, (Vec<String>, Vec<Box<ASTNode>>)>,
 }
@@ -337,40 +374,26 @@ struct MiniLangVM {
 impl MiniLangVM {
     #![allow(unused_variables)]
 
+    fn assert_variable(&self, name: &str, expected_value: Value) {
+        match self.variables.get(name) {
+            Some(value) if *value == expected_value => {
+                println!("Teste bem-sucedido: {} = {:?}", name, expected_value);
+            }
+            Some(value) => {
+                println!("Teste falhou: Esperado {:?}, mas encontrou {:?}", expected_value, value);
+            }
+            None => {
+                println!("Teste falhou: Variavel '{}', não encontrada!");
+            }
+        }
+    }
+
     fn new() -> Self {
         MiniLangVM {
             variables: HashMap::new(),
             variable_order: Vec::new(),
             functions: HashMap::new(),
         }
-    }
-    fn run(&mut self, ast: ASTNode) -> Option<i32> {
-        match ast {
-            ASTNode::Program(statements) => {
-                for statement in statements {
-                    if let Some(value) = self.run(*statement) {
-                        return Some(value);
-                    }
-                }
-            }
-            ASTNode::LetDeclaration {identifier, expression} => {
-                let value = self.evaluate_expression(*expression);
-                self.variables.insert(identifier.clone(), value);
-                self.variable_order.push(identifier);
-            }
-            ASTNode::FunctionDeclaration {name, parameters, body} => {
-                self.functions.insert(name, (parameters, body));
-            }
-            ASTNode::FunctionCall {name, arguments} => {
-               return self.execute_function_call(name, arguments);
-            }
-            ASTNode::Return {expression} => {
-                let value = self.evaluate_expression(*expression);
-                return Some(value);
-            }
-            _ => panic!("Instrução não suportada!"),
-        }
-        None
     }
 
     fn execute_function_call(&mut self, name:String, arguments: Vec<Box<ASTNode>>) -> Option<i32> {
@@ -402,19 +425,35 @@ impl MiniLangVM {
         result
     }
 
-    fn evaluate_expression(&mut self, expression: ASTNode) -> i32 {
+    fn evaluate_expression(&mut self, expression: ASTNode) -> (i32, Type) {
         match expression {
-            ASTNode::Number(value) => value,
-            ASTNode::Identifier(name) => *self.variables.get(&name).expect("Variável não encontrada!"),
+            ASTNode::Number(value) => Value::Int(value),
+            ASTNode::FloatLiteral(value) => Value::Float(value),
+            ASTNode::BooleanLiteral(value) => Value::Bool(value),
+            ASTNode::StringLiteral(value) => Value::String(value),
+            ASTNode::Identifier(name) => {
+                *self.variables.get(&name).expect("Variável não encontrada!").clone()
+            }
             ASTNode::BinaryExpression {left, operator, right} => {
-                let left_val = self.evaluate_expression(*left);
-                let right_val = self.evaluate_expression(*right);
-                match operator {
-                    Token::Plus => left_val + right_val,
-                    Token::Minus => left_val - right_val,
-                    Token::Multiply => left_val * right_val,
-                    Token::Divide => left_val / right_val,
-                    _ => panic!("Operador não suportado!"),
+                let left_value = self.evaluate_expression(*left);
+                let right_value = self.evaluate_expression(*right);
+
+                match (left_value, right_value, operator) {
+                    (Value::Int(l), Value::Int(r), Token::Plus) => Value::Int(l + r),
+                    (Value::Int(l), Value::Int(r), Token::Minus) => Value::Int(l - r),
+                    (Value::Int(l), Value::Int(r), Token::Multiply) => Value::Int(l * r),
+                    (Value::Int(l), Value::Int(r), Token::Divide) => Value::Int(l / r),
+
+                    (Value::Float(l), Value::Float(r), Token::Plus) => Value::Float(l + r),
+                    (Value::Float(l), Value::Float(r), Token::Minus) => Value::Float(l - r),
+                    (Value::Float(l), Value::Float(r), Token::Multiply) => Value::Float(l * r),
+                    (Value::Float(l), Value::Float(r), Token::Divide) => Value::Float(l / r),
+
+                    (Value::String(1), Value::String(1), Token::Plus) => {
+                        Value::String(1 + &r)
+                    }
+
+                    _ => panic!("Erro de tipo: Operação não suportada para esses tipos!"),
                 }
             }
             ASTNode::FunctionCall { name, arguments } => {
@@ -432,6 +471,47 @@ impl MiniLangVM {
                 return value;
             }
             _ => panic!("Expressão não suportada!"),
+        }
+    }
+    fn run(&mut self, ast: ASTNode) -> Option<i32> {
+        match ast {
+            ASTNode::Program(statements) => {
+                for statement in statements {
+                    if let Some(value) = self.run(*statement) {
+                        return Some(value);
+                    }
+                }
+            }
+            ASTNode::LetDeclaration {identifier,var_type , expression} => {
+                let (value, expr_type) = self.evaluate_expression(*expression);
+
+                if var_type != expr_type {
+                    panic!("Erro de tipo: Esperado {:?}, mas obteve {:?}", var_type, expr_type);
+                }
+
+                self.variables.insert(identifier.clone(), value);
+                self.variable_order.push(identifier);
+            }
+            ASTNode::FunctionDeclaration {name, parameters, body} => {
+                self.functions.insert(name, (parameters, body));
+            }
+            ASTNode::FunctionCall {name, arguments} => {
+               return self.execute_function_call(name, arguments);
+            }
+            ASTNode::Return {expression} => {
+                let value = self.evaluate_expression(*expression);
+                return Some(value);
+            }
+            _ => panic!("Instrução não suportada!"),
+        }
+        None
+    }
+    
+    fn print_environment(&self) {
+        println!("Ambiente de Execução:");
+
+        for (name, value) in &self.variables {
+            println!("{} = {:?}", name, value);
         }
     }
 }
@@ -472,5 +552,12 @@ fn main() {
         if let Some(value) = vm.variables.get(var_name) {
             println!("{} = {}", var_name, value);
         }
+    }
+    vm.print_environment();
+
+    if let Some(value) = vm.variables.get("x") {
+        println!("O valor da variável x é: {:?}", value);
+    } else {
+        println!("A variável x não foi encontrada.");
     }
 }

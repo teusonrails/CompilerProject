@@ -6,6 +6,8 @@ enum Token {
     Return,
     Ident(String),
     Number(i32),
+    FloatLiteral(f64),
+    StringLiteral(String),
     Plus,
     Minus,
     Multiply,
@@ -28,6 +30,8 @@ enum Token {
     FloatType,
     BoolType,
     StringType,
+    Else,
+    If,
     Eof,
 }
 
@@ -57,9 +61,9 @@ impl Lexer {
             '=' => {
                 if self.peek_char() == '=' {
                     self.position += 1;
-                    Token:EqualEqual
+                    Token::EqualEqual
                 } else {
-                    Token:Assign
+                    Token::Assign
                 }
             },
             '!' => {
@@ -97,6 +101,7 @@ impl Lexer {
             '}' => Token::RBrace,
             ',' => Token::Comma,
             ':' => Token::Colon,
+            '"' => return self.read_string(),
             _ => {
                 if ch.is_digit(10) {
                     return self.read_number();
@@ -128,11 +133,23 @@ impl Lexer {
 
     fn read_number(&mut self) -> Token{
         let start = self.position;
-        while self.position < self.input.len() && self.input[self.position].is_digit(10) {
+        let mut has_dot = false;
+        while self.position < self.input.len() && (self.input[self.position].is_digit(10) || (self.input[self.position] == '.' && !has_dot)){
+            if self.input[self.position] == '.' {
+                has_dot = true;
+            }
             self.position += 1
         }
-        let number: i32 = self.input[start..self.position].iter().collect::<String>().parse().unwrap();
-        Token::Number(number)
+        
+        let number: String = self.input[start..self.position].iter().collect();
+        
+        if has_dot {
+            let float_value: f64 = number.parse().unwrap();
+            Token::FloatLiteral(float_value)
+        } else {
+            let int_value: i32 = number.parse().unwrap();
+            Token::Number(int_value)
+        }
     }
 
     fn read_identifier(&mut self) -> Token {
@@ -150,8 +167,27 @@ impl Lexer {
             "let" => Token::Let,
             "function" => Token::Function,
             "return" => Token::Return,
+            "if" => Token::If,
+            "Else" => Token::Else,
             _ => Token::Ident(ident),
         }
+    }
+
+    fn read_string(&mut self) -> Token {
+        self.position += 1;
+        let start = self.position;
+
+        while self.position < self.input.len() && self.input[self.position] != '"' {
+            self.position += 1;
+        }
+
+        if self.position >= self.input.len() {
+            panic!("String não terminada!");
+        }
+
+        let string_value: String = self.input[start..self.position].iter().collect();
+        self.position += 1;
+        Token::StringLiteral(string_value)
     }
 }
 
@@ -180,6 +216,11 @@ enum ASTNode {
     },
     Return {
         expression: Box<ASTNode>,
+    },
+    IfElse {
+        condition: Box<ASTNode>,
+        if_branch: Vec<Box<ASTNode>>,
+        else_branch: Option<Vec<Box<ASTNode>>>,
     },
     Identifier(String),
     Number(i32),
@@ -222,6 +263,7 @@ impl Parser {
             Token::Let => self.parse_let_declaration(),
             Token::Function => self.parse_function_declaration(),
             Token::Return => self.parse_return_declaration(),
+            Token::If => self.parse_if_statement(),
             _ => self.parse_expression(),
         }
     }
@@ -312,6 +354,14 @@ impl Parser {
                 self.eat(Token::Number(value));
                 ASTNode::Number(value)
             }
+            Token::FloatLiteral(value) => {
+                self.eat(Token::FloatLiteral(value));
+                ASTNode::FloatLiteral(value)
+            }
+            Token::StringLiteral(value) => {
+                self.eat(Token::StringLiteral(value.clone()));
+                ASTNode::StringLiteral(value)
+            }
             Token::Ident(name) => {
                 let identifier = name.clone();
                 self.eat(Token::Ident(name));
@@ -396,6 +446,64 @@ impl Parser {
         self.eat(Token::RParen);
 
         ASTNode::FunctionCall { name, arguments }
+    }
+    fn parse_if_statement(&mut self) -> ASTNode {
+        self.eat(Token::If);
+
+        self.eat(Token::LParen);
+        let condition = self.parse_expression();
+        self.eat(Token::RParen);
+
+        self.eat(Token::LBrace);
+        let if_branch = self.parse_block();
+        self.eat(Token::RBrace);
+        
+        let else_branch = if self.current_token() == Token::Else {
+            self.eat(Token::Else);
+            self.eat(Token::LBrace);
+            let block = self.parse_block();
+
+            self.eat(Token::RBrace);
+            Some(block)
+        } else {
+            None
+        };
+
+        ASTNode::IfElse {
+            condition: Box::new(condition),
+            if_branch,
+            else_branch,
+        }
+    }
+
+    fn parse_block(&mut self) -> Vec<Box<ASTNode>> {
+        let mut statements = Vec::new();
+
+        while self.current_token() != Token::RBrace && self.current_token() != Token::Eof {
+            let statement = self.parse_statement();
+
+            statements.push(Box::new(statement));
+        }
+        statements
+    }
+
+    fn parse_comparison_expression(&mut self) -> ASTNode {
+        let mut left = self.parse_additive_expression();
+
+        while matches!(
+            self.current_token(),
+            Token::Less | Token::LessEqual | Token::Greater | Token::GreaterEqual | Token::EqualEqual | Token::NotEqual
+        ) {
+            let operator = self.current_token();
+            self.eat(operator.clone());
+
+            let right = self.parse_additive_expression();
+            left = ASTNode::BinaryExpression {
+                left: Box::new(left);
+                operator,
+                right: Box::new(right),
+            };
+        }
     }
 
     fn eat(&mut self, expected: Token) {
@@ -536,12 +644,19 @@ impl MiniLangVM {
                     (Value::String(l), Value::String(r), Token::Plus) => (Value::String(l + &r), Type::String),
 
                     (Value::Int(l), Value::Int(r), Token::EqualEqual) => (Value::Bool(l == r), Type::Bool),
-                    (Value::Int(l), Value::Int(r), Token::NotEqual) => (Value::Bool(l == r), Type::Bool),
-                    (Value::Int(l), Value::Int(r), Token::Greater) => (Value::Bool(l == r), Type::Bool),
-                    (Value::Int(l), Value::Int(r), Token::GreaterEqual) => (Value::Bool(l == r), Type::Bool),
-                    (Value::Int(l), Value::Int(r), Token::Less) => (Value::Bool(l == r), Type::Bool),
-                    (Value::Int(l), Value::Int(r), Token::LessEqual) => (Value::Bool(l == r), Type::Bool),
+                    (Value::Int(l), Value::Int(r), Token::NotEqual) => (Value::Bool(l != r), Type::Bool),
+                    (Value::Int(l), Value::Int(r), Token::Greater) => (Value::Bool(l > r), Type::Bool),
+                    (Value::Int(l), Value::Int(r), Token::GreaterEqual) => (Value::Bool(l >= r), Type::Bool),
+                    (Value::Int(l), Value::Int(r), Token::Less) => (Value::Bool(l < r), Type::Bool),
+                    (Value::Int(l), Value::Int(r), Token::LessEqual) => (Value::Bool(l <= r), Type::Bool),
                     
+                    (Value::Float(l), Value::Float(r), Token::EqualEqual) => (Value::Bool(l == r), Type::Bool),
+                    (Value::Float(l), Value::Float(r), Token::NotEqual) => (Value::Bool(l != r), Type::Bool),
+                    (Value::Float(l), Value::Float(r), Token::Greater) => (Value::Bool(l > r), Type::Bool),
+                    (Value::Float(l), Value::Float(r), Token::GreaterEqual) => (Value::Bool(l >= r), Type::Bool),
+                    (Value::Float(l), Value::Float(r), Token::Less) => (Value::Bool(l < r), Type::Bool),
+                    (Value::Float(l), Value::Float(r), Token::LessEqual) => (Value::Bool(l <= r), Type::Bool),
+
                     _ => panic!("Erro de tipo: Operação não suportada para esses tipos!"),
                 };
                 
@@ -565,6 +680,27 @@ impl MiniLangVM {
             _ => panic!("Expressão não suportada!"),
         }
     }
+
+    fn execute_if_else(&mut self, condition: ASTNode, if_branch: Vec<Box<ASTNode>>, else_branch: Option<Vec<Box<ASTNode>>>) {
+        let (condition_value, _) = self.evaluate_expression(condition);
+
+        match condition_value {
+            Value::Bool(true) => {
+                for stmt in if_branch {
+                    self.run(*stmt);
+                }
+            }
+            Value::Bool(true) => {
+                if let Some(else_branch) = else_branch {
+                    for stmt in else_branch {
+                        self.run(*stmt);
+                    }
+                }
+            }
+            _ => panic!("Erro de tipo: Condição em um 'if' deve ser booleano!"),
+        }
+    }
+
     fn run(&mut self, ast: ASTNode) -> Option<(Value, Type)> {
         match ast {
             ASTNode::Program(statements) => {
@@ -598,6 +734,9 @@ impl MiniLangVM {
                 let (value, expr_type) = self.evaluate_expression(*expression);
                 return Some((value, expr_type ));
             }
+            ASTNode::IfElse { condition, if_branch, else_branch } => {
+                self.execute_if_else(*condition, if_branch, else_branch);
+            }
             _ => panic!("Instrução não suportada!"),
         }
         None
@@ -615,21 +754,23 @@ impl MiniLangVM {
 
 fn main() {
     let input = String::from("
-        function soma(a: int, b: int) {
-            return a + b;
-        } 
+    let x: int = 10;
+    let y: int = 20;
 
-        let x: int = 10;
-        let y: int = 20;
-        let z: int = soma(x, y);
+    if (x < y) {
+        let z: int = x + y;
+    } else {
+        let z: int = x - y;
+    }
 
-        function is_positive(n: int): bool {
-            return n > 0;
-        }
+    let a: bool = x > y;
 
-        let is_x_positive: bool = is_positive(x);
-        let mensagem: string = 'A soma de x e y é: '";
-    );
+    if (a) {
+        let resultado: string = \"x é maior que y\";
+    } else {
+        let resultado: string = \"x não é maior que y\";
+    }
+    ");
 
     let mut lexer = Lexer::new(input);
     let mut tokens = Vec::new();
